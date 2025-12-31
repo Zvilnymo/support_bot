@@ -24,8 +24,8 @@ DATABASE_URL = os.environ["DATABASE_URL"]
 BITRIX_CONTACT_URL = os.environ["BITRIX_CONTACT_URL"]  # crm.contact.list
 BITRIX_TASK_URL = os.environ["BITRIX_TASK_URL"]        # task.item.add
 
-# Админ (только для управления сотрудниками/категориями)
-ADMIN_TELEGRAM_ID = 727013047
+# Админы (только для управления сотрудниками/категориями)
+ADMIN_TELEGRAM_IDS = [727013047, 458757059, 8183276948]  # Список ID админов
 
 # ID чатов для отделов
 SUPPORT_CHAT_ID = -1003053461710  # Чат поддержки
@@ -479,7 +479,7 @@ def normalize_phone(phone: str) -> str:
 
 def is_admin(user_id: int) -> bool:
     """Проверка, является ли пользователь админом"""
-    return user_id == ADMIN_TELEGRAM_ID
+    return user_id in ADMIN_TELEGRAM_IDS
 
 # ==========================================
 # ПАРСИНГ СООБЩЕНИЙ
