@@ -471,11 +471,23 @@ def clean_phone(p: str) -> str:
 def normalize_phone(phone: str) -> str:
     """Нормализовать телефон в формат +380XXXXXXXXX"""
     digits = clean_phone(phone)
-    if digits.startswith("0"):
-        digits = "38" + digits
-    if not digits.startswith("380"):
-        digits = "380" + digits.lstrip("380")
-    return "+" + digits
+    #if digits.startswith("0"):
+    #    digits = "38" + digits
+    #if not digits.startswith("380"):
+    #    digits = "380" + digits.lstrip("380")
+    regular_phone1 = re.match(r'380\d\d\d\d\d\d\d\d\d$', digits)
+    regular_phone2 = re.match(r'0\d\d\d\d\d\d\d\d\d$', digits)
+    regular_phone3 = re.match(r'\d\d\d\d\d\d\d\d\d$', digits)
+
+    if regular_phone1:  # Номер начинается с 38 - оставляем, как есть.
+        new_phone = regular_phone1.group()
+    elif regular_phone2:
+        new_phone = '38' + regular_phone2.group()
+    elif regular_phone3:
+        new_phone = '380' + regular_phone3.group()
+    else:
+        new_phone = digits
+    return "+" + new_phone
 
 def is_admin(user_id: int) -> bool:
     """Проверка, является ли пользователь админом"""
