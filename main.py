@@ -542,8 +542,15 @@ def _save_record(employee_telegram_id, code, phone, comment, category_name, empl
     record_id = add_record(employee_telegram_id, code, phone, comment, department)
 
     if record_id:
-        client_name = f"{contact.get('NAME', '')} {contact.get('LAST_NAME', '')}".strip()
-        return f"✅ Запис збережено: {category_name} – {client_name}"
+        client_name = f"{contact.get('NAME', '')} {contact.get('LAST_NAME', '')}".strip() or "—"
+        return (
+            f"✅ Запис збережено\n\n"
+            f"👤 {client_name}\n"
+            f"📞 {phone}\n"
+            f"🧩 {category_name}\n"
+            f"👨‍💼 {employee_name}\n"
+            f"💬 {comment}"
+        )
     else:
         return "⚠ Помилка збереження у БД, але задача у Bitrix створена"
 
@@ -577,24 +584,40 @@ def handle_message(update: Update, context: CallbackContext):
         update.message.reply_text("❌ Немає категорій у базі")
         return
 
+    # Видаляємо повідомлення з телефоном
+    try:
+        context.bot.delete_message(update.message.chat_id, update.message.message_id)
+    except Exception:
+        pass
+
     # Зберігаємо стан та показуємо інлайн-кнопки категорій
     context.user_data.clear()
     context.user_data['state'] = STATE_WAITING_CATEGORY
     context.user_data['phone'] = phone
     context.user_data['department'] = department
 
-    update.message.reply_text(
+    sent = update.message.reply_text(
         f"📞 Телефон: {phone}\nОберіть категорію:",
         reply_markup=build_categories_keyboard(categories)
     )
+    context.user_data['bot_message_id'] = sent.message_id
+    context.user_data['chat_id'] = update.message.chat_id
 
 def _handle_comment_input(update: Update, context: CallbackContext):
     """Called when user is in STATE_WAITING_COMMENT and sends a text message."""
-    comment = update.message.text.strip()
+    comment       = update.message.text.strip()
     phone         = context.user_data['phone']
     code          = context.user_data['category_code']
     category_name = context.user_data['category_name']
     department    = context.user_data['department']
+    chat_id       = context.user_data.get('chat_id', update.message.chat_id)
+    bot_msg_id    = context.user_data.get('bot_message_id')
+
+    # Видаляємо повідомлення з коментарем
+    try:
+        context.bot.delete_message(update.message.chat_id, update.message.message_id)
+    except Exception:
+        pass
 
     employee = get_employee_by_telegram_id(update.message.from_user.id, department)
     if employee:
@@ -620,21 +643,32 @@ def _handle_comment_input(update: Update, context: CallbackContext):
             'responsible_id': responsible_id,
             'department':    department,
         }
-        update.message.reply_text(
+        dup_text = (
             f"⚠️ Ви вже записували категорію {code} для цього клієнта менше 5 хв тому.\n"
-            f"Продовжити?",
-            reply_markup=build_duplicate_keyboard()
+            f"Продовжити?"
         )
+        try:
+            context.bot.edit_message_text(
+                chat_id=chat_id, message_id=bot_msg_id,
+                text=dup_text, reply_markup=build_duplicate_keyboard()
+            )
+        except Exception:
+            update.message.reply_text(dup_text, reply_markup=build_duplicate_keyboard())
         return
 
-    context.user_data.clear()
-    msg = _save_record(
+    save_kwargs = dict(
         employee_telegram_id=update.message.from_user.id,
         code=code, phone=phone, comment=comment,
         category_name=category_name, employee_name=employee_name,
         responsible_id=responsible_id, department=department,
     )
-    update.message.reply_text(msg)
+    context.user_data.clear()
+    msg = _save_record(**save_kwargs)
+
+    try:
+        context.bot.edit_message_text(chat_id=chat_id, message_id=bot_msg_id, text=msg)
+    except Exception:
+        update.message.reply_text(msg)
 
 # ==========================================
 # ОБРОБНИК ІНЛАЙН-КНОПОК
