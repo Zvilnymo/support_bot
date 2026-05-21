@@ -444,10 +444,12 @@ def is_admin(user_id: int) -> bool:
 # ==========================================
 
 def build_categories_keyboard(categories):
-    keyboard = [
-        [InlineKeyboardButton(f"{cat['code']} — {cat['name']}", callback_data=f"cat_{cat['code']}")]
+    buttons = [
+        InlineKeyboardButton(cat['name'], callback_data=f"cat_{cat['code']}")
         for cat in categories
     ]
+    # 2 buttons per row
+    keyboard = [buttons[i:i+2] for i in range(0, len(buttons), 2)]
     return InlineKeyboardMarkup(keyboard)
 
 def build_duplicate_keyboard():
