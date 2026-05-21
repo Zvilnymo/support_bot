@@ -596,8 +596,9 @@ def handle_message(update: Update, context: CallbackContext):
     context.user_data['phone'] = phone
     context.user_data['department'] = department
 
-    sent = update.message.reply_text(
-        f"📞 Телефон: {phone}\nОберіть категорію:",
+    sent = context.bot.send_message(
+        chat_id=update.message.chat_id,
+        text=f"📞 Телефон: {phone}\nОберіть категорію:",
         reply_markup=build_categories_keyboard(categories)
     )
     context.user_data['bot_message_id'] = sent.message_id
@@ -653,7 +654,7 @@ def _handle_comment_input(update: Update, context: CallbackContext):
                 text=dup_text, reply_markup=build_duplicate_keyboard()
             )
         except Exception:
-            update.message.reply_text(dup_text, reply_markup=build_duplicate_keyboard())
+            context.bot.send_message(chat_id=chat_id, text=dup_text, reply_markup=build_duplicate_keyboard())
         return
 
     save_kwargs = dict(
@@ -668,7 +669,7 @@ def _handle_comment_input(update: Update, context: CallbackContext):
     try:
         context.bot.edit_message_text(chat_id=chat_id, message_id=bot_msg_id, text=msg)
     except Exception:
-        update.message.reply_text(msg)
+        context.bot.send_message(chat_id=chat_id, text=msg)
 
 # ==========================================
 # ОБРОБНИК ІНЛАЙН-КНОПОК
