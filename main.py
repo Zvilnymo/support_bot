@@ -463,12 +463,12 @@ def build_duplicate_keyboard():
 # ==========================================
 
 def find_contact_by_phone(phone):
-    norm_phone_full = normalize_phone(phone)
+    canonical = normalize_phone(phone)  # e.g. "+380675653607"
     try:
         r = requests.get(
             BITRIX_CONTACT_URL,
             params={
-                "filter[PHONE]": norm_phone_full,
+                "filter[PHONE]": canonical,
                 "select[]": ["ID", "NAME", "LAST_NAME", "PHONE"]
             }
         )
@@ -484,7 +484,7 @@ def find_contact_by_phone(phone):
 
     for c in result:
         for ph in c.get("PHONE", []):
-            if clean_phone(ph.get("VALUE", "")) == clean_phone(norm_phone_full):
+            if normalize_phone(ph.get("VALUE", "")) == canonical:
                 return c
     return None
 
@@ -531,18 +531,13 @@ def create_task(contact_id, category, comment, responsible_id):
 # ЗБЕРЕЖЕННЯ ЗАПИСУ
 # ==========================================
 
-def _save_record(employee_telegram_id, code, phone, comment, category_name, employee_name, responsible_id, department):
+def _save_record(employee_telegram_id, code, phone, comment, category_name, employee_name, responsible_id, department, contact_id, client_name):
     """Saves record to DB and Bitrix. Returns message text for the user."""
-    contact = find_contact_by_phone(phone)
-    if not contact:
-        return "❗ Клієнт не знайдений у CRM"
-
-    create_task(contact["ID"], category_name, comment, responsible_id)
+    create_task(contact_id, category_name, comment, responsible_id)
 
     record_id = add_record(employee_telegram_id, code, phone, comment, department)
 
     if record_id:
-        client_name = f"{contact.get('NAME', '')} {contact.get('LAST_NAME', '')}".strip() or "—"
         return (
             f"✅ Запис збережено\n\n"
             f"👤 {client_name}\n"
@@ -579,26 +574,43 @@ def handle_message(update: Update, context: CallbackContext):
     if not phone:
         return
 
+    # Перевіряємо CRM одразу, щоб не витрачати час на вибір категорії
+    contact = find_contact_by_phone(phone)
+    if not contact:
+        try:
+            context.bot.delete_message(update.message.chat_id, update.message.message_id)
+        except Exception as e:
+            print(f"❌ delete phone msg error: {e}", flush=True)
+        context.bot.send_message(
+            chat_id=update.message.chat_id,
+            text="❗ Клієнт не знайдений у CRM"
+        )
+        return
+
     categories = get_all_categories(department)
     if not categories:
         update.message.reply_text("❌ Немає категорій у базі")
         return
 
+    client_name = f"{contact.get('NAME', '')} {contact.get('LAST_NAME', '')}".strip() or "—"
+
     # Видаляємо повідомлення з телефоном
     try:
         context.bot.delete_message(update.message.chat_id, update.message.message_id)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"❌ delete phone msg error: {e}", flush=True)
 
     # Зберігаємо стан та показуємо інлайн-кнопки категорій
     context.user_data.clear()
     context.user_data['state'] = STATE_WAITING_CATEGORY
     context.user_data['phone'] = phone
     context.user_data['department'] = department
+    context.user_data['contact_id'] = contact['ID']
+    context.user_data['client_name'] = client_name
 
     sent = context.bot.send_message(
         chat_id=update.message.chat_id,
-        text=f"📞 Телефон: {phone}\nОберіть категорію:",
+        text=f"📞 {phone} — {client_name}\nОберіть категорію:",
         reply_markup=build_categories_keyboard(categories)
     )
     context.user_data['bot_message_id'] = sent.message_id
@@ -617,8 +629,8 @@ def _handle_comment_input(update: Update, context: CallbackContext):
     # Видаляємо повідомлення з коментарем
     try:
         context.bot.delete_message(update.message.chat_id, update.message.message_id)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"❌ delete comment msg error: {e}", flush=True)
 
     employee = get_employee_by_telegram_id(update.message.from_user.id, department)
     if employee:
@@ -632,6 +644,9 @@ def _handle_comment_input(update: Update, context: CallbackContext):
         update.message.from_user.id, code, phone, department, minutes=5
     )
 
+    contact_id  = context.user_data.get('contact_id')
+    client_name = context.user_data.get('client_name', '—')
+
     if is_duplicate:
         context.user_data['state'] = STATE_AWAITING_DUPLICATE
         context.user_data['pending_record'] = {
@@ -643,6 +658,8 @@ def _handle_comment_input(update: Update, context: CallbackContext):
             'employee_name': employee_name,
             'responsible_id': responsible_id,
             'department':    department,
+            'contact_id':    contact_id,
+            'client_name':   client_name,
         }
         dup_text = (
             f"⚠️ Ви вже записували категорію {code} для цього клієнта менше 5 хв тому.\n"
@@ -662,6 +679,7 @@ def _handle_comment_input(update: Update, context: CallbackContext):
         code=code, phone=phone, comment=comment,
         category_name=category_name, employee_name=employee_name,
         responsible_id=responsible_id, department=department,
+        contact_id=contact_id, client_name=client_name,
     )
     context.user_data.clear()
     msg = _save_record(**save_kwargs)
@@ -697,7 +715,7 @@ def handle_callback(update: Update, context: CallbackContext):
         context.user_data['state']         = STATE_WAITING_COMMENT
 
         query.edit_message_text(
-            f"📞 Телефон: {context.user_data['phone']}\n"
+            f"📞 {context.user_data['phone']} — {context.user_data.get('client_name', '—')}\n"
             f"🧩 Категорія: {category['name']}\n\n"
             f"✏️ Введіть коментар:"
         )
