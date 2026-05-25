@@ -463,14 +463,12 @@ def build_duplicate_keyboard():
 # ==========================================
 
 def find_contact_by_phone(phone):
-    canonical = normalize_phone(phone)   # "+380675653607"
-    digits    = clean_phone(canonical)   # "380675653607"
-    local     = "0" + digits[2:]        # "0675653607"
+    canonical = normalize_phone(phone)  # "+380675653607"
+    digits    = clean_phone(canonical)  # "380675653607"
+    local     = "0" + digits[2:]       # "0675653607"
 
-    print(f"🔍 CRM search: {canonical}", flush=True)
-
-    # Bitrix may store phones in various formats — try all variants
-    for search_val in [canonical, digits, local]:
+    # Bitrix ignores leading "+", so search digits-first, then local format as fallback
+    for search_val in [digits, local, canonical]:
         try:
             r = requests.get(
                 BITRIX_CONTACT_URL,
@@ -479,18 +477,14 @@ def find_contact_by_phone(phone):
             r.raise_for_status()
             result = r.json().get("result", [])
         except Exception as e:
-            print(f"❌ Bitrix24 error ({search_val}): {e}", flush=True)
+            print(f"❌ Bitrix24 error: {e}", flush=True)
             continue
 
-        print(f"🔍 filter={search_val!r} → {len(result)} result(s)", flush=True)
         for c in result:
-            stored = [ph.get("VALUE", "") for ph in c.get("PHONE", [])]
-            print(f"🔍   contact {c.get('ID')}: {stored}", flush=True)
             for ph in c.get("PHONE", []):
                 if normalize_phone(ph.get("VALUE", "")) == canonical:
                     return c
 
-    print(f"❌ Not found in CRM: {canonical}", flush=True)
     return None
 
 def create_task(contact_id, category, comment, responsible_id):
