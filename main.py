@@ -552,20 +552,19 @@ def _save_record(employee_telegram_id, code, phone, comment, category_name, empl
 # ОСНОВНИЙ ОБРОБНИК ПОВІДОМЛЕНЬ
 # ==========================================
 
-def _parse_pretrial_message(text: str, department: str):
+def _parse_pretrial_message(text: str):
     """Parse 'CODE PHONE | comment' format used in pre_trial chat.
-    Returns (code, phone, comment) or None if text doesn't match."""
+    Returns (code, phone, comment) or None if format doesn't match."""
     m = re.match(r'^(\S+)\s+([\+\d][\d\s\(\)\-]{6,19})\s*\|\s*(.+)$', text.strip(), re.S)
     if not m:
         return None
-    code, phone_raw, comment = m.group(1).upper(), m.group(2).strip(), m.group(3).strip()
+    code      = m.group(1).upper()
+    phone_raw = m.group(2).strip()
+    comment   = m.group(3).strip()
     phone = try_parse_phone(phone_raw)
     if not phone:
         return None
-    category = get_category_by_code(code, department)
-    if not category:
-        return None
-    return code, phone, comment, category['name']
+    return code, phone, comment
 
 
 def handle_message(update: Update, context: CallbackContext):
@@ -577,10 +576,16 @@ def handle_message(update: Update, context: CallbackContext):
 
     # ── pre_trial: формат «КОД ТЕЛЕФОН | коментар» в одному повідомленні ──
     if department == 'pre_trial':
-        parsed = _parse_pretrial_message(update.message.text, department)
+        parsed = _parse_pretrial_message(update.message.text)
         if not parsed:
             return
-        code, phone, comment, category_name = parsed
+        code, phone, comment = parsed
+
+        category = get_category_by_code(code, department)
+        if not category:
+            update.message.reply_text(f"❌ Невідома категорія: {code}")
+            return
+        category_name = category['name']
 
         contact = find_contact_by_phone(phone)
 
