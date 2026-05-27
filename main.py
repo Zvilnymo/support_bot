@@ -44,10 +44,9 @@ RESPONSIBLE_ID = 596
 ) = range(5)
 
 # Состояния рабочего флоу (хранятся в user_data)
-STATE_WAITING_CATEGORY      = 'waiting_category'       # support: inline buttons
-STATE_WAITING_CATEGORY_CODE = 'waiting_category_code'  # pre_trial: text input
-STATE_WAITING_COMMENT       = 'waiting_comment'
-STATE_AWAITING_DUPLICATE    = 'awaiting_duplicate'
+STATE_WAITING_CATEGORY   = 'waiting_category'
+STATE_WAITING_COMMENT    = 'waiting_comment'
+STATE_AWAITING_DUPLICATE = 'awaiting_duplicate'
 
 # ==========================================
 # POSTGRESQL CONNECTION POOL
@@ -553,116 +552,128 @@ def _save_record(employee_telegram_id, code, phone, comment, category_name, empl
 # ОСНОВНИЙ ОБРОБНИК ПОВІДОМЛЕНЬ
 # ==========================================
 
+def _parse_pretrial_message(text: str, department: str):
+    """Parse 'CODE PHONE | comment' format used in pre_trial chat.
+    Returns (code, phone, comment) or None if text doesn't match."""
+    m = re.match(r'^(\S+)\s+([\+\d][\d\s\(\)\-]{6,19})\s*\|\s*(.+)$', text.strip(), re.S)
+    if not m:
+        return None
+    code, phone_raw, comment = m.group(1).upper(), m.group(2).strip(), m.group(3).strip()
+    phone = try_parse_phone(phone_raw)
+    if not phone:
+        return None
+    category = get_category_by_code(code, department)
+    if not category:
+        return None
+    return code, phone, comment, category['name']
+
+
 def handle_message(update: Update, context: CallbackContext):
     print(f"📨 Отримано повідомлення з чату: {update.message.chat_id}", flush=True)
-    print(f"📝 Текст: {update.message.text}", flush=True)
 
     department = get_department_by_chat_id(update.message.chat_id)
     if not department:
-        print("⚠️ Повідомлення з непідтримуваного чату, ігноруємо")
         return
 
+    # ── pre_trial: формат «КОД ТЕЛЕФОН | коментар» в одному повідомленні ──
+    if department == 'pre_trial':
+        parsed = _parse_pretrial_message(update.message.text, department)
+        if not parsed:
+            return
+        code, phone, comment, category_name = parsed
+
+        contact = find_contact_by_phone(phone)
+
+        try:
+            context.bot.delete_message(update.message.chat_id, update.message.message_id)
+        except Exception as e:
+            print(f"❌ delete msg error: {e}", flush=True)
+
+        if not contact:
+            context.bot.send_message(chat_id=update.message.chat_id, text="❗ Клієнт не знайдений у CRM")
+            return
+
+        client_name = f"{contact.get('NAME', '')} {contact.get('LAST_NAME', '')}".strip() or "—"
+
+        employee = get_employee_by_telegram_id(update.message.from_user.id, department)
+        employee_name  = employee['name']  if employee else update.message.from_user.full_name
+        responsible_id = employee['bitrix_id'] if employee else RESPONSIBLE_ID
+
+        is_duplicate = check_duplicate_record(update.message.from_user.id, code, phone, department, minutes=5)
+        if is_duplicate:
+            context.user_data['state'] = STATE_AWAITING_DUPLICATE
+            context.user_data['pending_record'] = {
+                'employee_telegram_id': update.message.from_user.id,
+                'code': code, 'phone': phone, 'comment': comment,
+                'category_name': category_name, 'employee_name': employee_name,
+                'responsible_id': responsible_id, 'department': department,
+                'contact_id': contact['ID'], 'client_name': client_name,
+            }
+            context.user_data['chat_id'] = update.message.chat_id
+            sent = context.bot.send_message(
+                chat_id=update.message.chat_id,
+                text=f"⚠️ Ви вже записували категорію {code} для цього клієнта менше 5 хв тому.\nПродовжити?",
+                reply_markup=build_duplicate_keyboard()
+            )
+            context.user_data['bot_message_id'] = sent.message_id
+            return
+
+        msg = _save_record(
+            employee_telegram_id=update.message.from_user.id,
+            code=code, phone=phone, comment=comment,
+            category_name=category_name, employee_name=employee_name,
+            responsible_id=responsible_id, department=department,
+            contact_id=contact['ID'], client_name=client_name,
+        )
+        context.bot.send_message(chat_id=update.message.chat_id, text=msg)
+        return
+
+    # ── support: покроковий флоу через кнопки ──
     state = context.user_data.get('state')
 
     if state == STATE_WAITING_COMMENT:
         _handle_comment_input(update, context)
         return
 
-    if state == STATE_WAITING_CATEGORY_CODE:
-        _handle_category_code_input(update, context)
-        return
-
-    # Спроба розпізнати номер телефону
     phone = try_parse_phone(update.message.text)
     if not phone:
         return
 
-    # Перевіряємо CRM одразу, щоб не витрачати час на вибір категорії
     contact = find_contact_by_phone(phone)
     if not contact:
         try:
             context.bot.delete_message(update.message.chat_id, update.message.message_id)
         except Exception as e:
             print(f"❌ delete phone msg error: {e}", flush=True)
-        context.bot.send_message(
-            chat_id=update.message.chat_id,
-            text="❗ Клієнт не знайдений у CRM"
-        )
+        context.bot.send_message(chat_id=update.message.chat_id, text="❗ Клієнт не знайдений у CRM")
+        return
+
+    categories = get_all_categories(department)
+    if not categories:
+        update.message.reply_text("❌ Немає категорій у базі")
         return
 
     client_name = f"{contact.get('NAME', '')} {contact.get('LAST_NAME', '')}".strip() or "—"
 
-    # Видаляємо повідомлення з телефоном
     try:
         context.bot.delete_message(update.message.chat_id, update.message.message_id)
     except Exception as e:
         print(f"❌ delete phone msg error: {e}", flush=True)
 
     context.user_data.clear()
+    context.user_data['state']       = STATE_WAITING_CATEGORY
     context.user_data['phone']       = phone
     context.user_data['department']  = department
     context.user_data['contact_id']  = contact['ID']
     context.user_data['client_name'] = client_name
 
-    if department == 'pre_trial':
-        # Досудебка: вводять код вручну
-        context.user_data['state'] = STATE_WAITING_CATEGORY_CODE
-        sent = context.bot.send_message(
-            chat_id=update.message.chat_id,
-            text=f"📞 {phone} — {client_name}\nВведіть код категорії:"
-        )
-    else:
-        # Support: вибір категорії через кнопки
-        categories = get_all_categories(department)
-        if not categories:
-            context.bot.send_message(chat_id=update.message.chat_id, text="❌ Немає категорій у базі")
-            return
-        context.user_data['state'] = STATE_WAITING_CATEGORY
-        sent = context.bot.send_message(
-            chat_id=update.message.chat_id,
-            text=f"📞 {phone} — {client_name}\nОберіть категорію:",
-            reply_markup=build_categories_keyboard(categories)
-        )
-
+    sent = context.bot.send_message(
+        chat_id=update.message.chat_id,
+        text=f"📞 {phone} — {client_name}\nОберіть категорію:",
+        reply_markup=build_categories_keyboard(categories)
+    )
     context.user_data['bot_message_id'] = sent.message_id
     context.user_data['chat_id'] = update.message.chat_id
-
-def _handle_category_code_input(update: Update, context: CallbackContext):
-    """pre_trial: user typed a category code."""
-    code       = update.message.text.strip().upper()
-    department = context.user_data['department']
-    phone      = context.user_data['phone']
-    client_name = context.user_data.get('client_name', '—')
-    chat_id    = context.user_data.get('chat_id', update.message.chat_id)
-    bot_msg_id = context.user_data.get('bot_message_id')
-
-    try:
-        context.bot.delete_message(update.message.chat_id, update.message.message_id)
-    except Exception as e:
-        print(f"❌ delete category code msg error: {e}", flush=True)
-
-    category = get_category_by_code(code, department)
-    if not category:
-        try:
-            context.bot.edit_message_text(
-                chat_id=chat_id, message_id=bot_msg_id,
-                text=f"📞 {phone} — {client_name}\n❌ Код «{code}» не знайдено. Введіть код категорії:"
-            )
-        except Exception:
-            pass
-        return
-
-    context.user_data['category_code'] = code
-    context.user_data['category_name'] = category['name']
-    context.user_data['state']         = STATE_WAITING_COMMENT
-
-    try:
-        context.bot.edit_message_text(
-            chat_id=chat_id, message_id=bot_msg_id,
-            text=f"📞 {phone} — {client_name}\n🧩 {code} — {category['name']}\n\n✏️ Введіть коментар:"
-        )
-    except Exception:
-        pass
 
 
 def _handle_comment_input(update: Update, context: CallbackContext):
